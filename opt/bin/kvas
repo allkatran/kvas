@@ -1,42 +1,87 @@
 #!/bin/sh
-. /opt/bin/kvas_lib_vpn
 
-APP_VERSION=
-APP_RELEASE=
+. /opt/apps/kvas/bin/libs/vpn
+. /opt/apps/kvas/bin/libs/check
+. /opt/apps/kvas/bin/libs/update
+. /opt/apps/kvas/bin/libs/hosts
+. /opt/apps/kvas/bin/main/setup
+. /opt/apps/kvas/bin/libs/tags
 
-# ------------------------------------------------------------------------------------------
+#------------------------------------------------------------------------------
 #
-# 	ОСНОВНОЙ БЛОК ОБРАБОТКИ
+#	ПАКЕТ КВАС
+#	файл ./kvas/bin/kvas -> /opt/bin/kvas
+#
+#------------------------------------------------------------------------------
+#
+#	Данный файл служит для запуска пакета КВАС из командной строки
+#	и содержит основные команды запуска пакета:
 #	Обработка получаемых аргументов скрипта
-#	$1 - комманда для обработки
-#	$2 - аргумент для работы команды (опционно)
+#	$1 - команда для обработки
+#	$2 - аргумент для работы команды
 #
+# ------------------------------------------------------------------------------
+#	Разработчик: mail@zeleza.ru
+#	Дата создания: 21/05/2022
+#	Лицензия: Apache License 2.0
+# ------------------------------------------------------------------------------
+
 # ------------------------------------------------------------------------------------------
-clear_file_content "${UNBLOCK_LIST_FILE}"
+#
+#	Функция оторажения списка доменных имен и поиска доменного имени
+#	$1 - строка поиска
+# ------------------------------------------------------------------------------------------
+cmd_show_kvas_list(){
+
+	local domain_to_search="${1}"
+	if [ -z "${domain_to_search}" ] ; then
+		cmd_show_list
+	else
+		cmd_show_list | grep "${domain_to_search}" || {
+			echo -e "Доменное имя ${BLUE}${domain_to_search}${NOCL} в списке не обнаружено."
+		}
+	fi
+}
+
+if  echo "${1}" | grep -qvEi 'uninstall' && [ -z "$(get_config_value "SETUP_FINISHED")" ]; then
+	print_line
+	echo "${2}" | grep -q "upgrade" && warning "Запускаем настройку пакета" || {
+		error "Настройка пакета не завершена, запускаем настройку пакета" "1"
+		print_line
+	}
+	cmd_install "${3}"
+	print_line
+	exit 0
+fi
+
+clear_file_content "${KVAS_LIST_FILE}"
 
 print_line
 case "${1}" in
-	bridge)
-		case "${2}" in
-			add ) 			cmd_bridge_vpn_access_add "${3}" ;;
-			del ) 			cmd_bridge_vpn_access_del "${3}" ;;
-			*) 				cmd_bridge_vpn_access_list ;;
-		esac
-		;;
+	setup)
+							echo "Настройка пакета КВАС завершена!"
+							echo "Для удаления пакета наберите 'kvas uninstall'"
+							;;
+
+	pause|freeze)           cmd_pause_kvas ;;
+	unpause|unfreeze)       cmd_unpause_kvas ;;
+	
 	dnsmasq)
 		case "${2}" in
 			port) 			cmd_dnsmasq_port_change "${3}" ;;
 			ip) 			cmd_dnsmasq_dns_change "${3}";;
-			status | *) 	cmd_dnsmasq_listen_show;
-							cmd_dnsmasq_port_show ;;
+			on)				cmd_adguardhome_off ;;
+			status | *) 	exit_when_adguard_on status;
+							[ "${status}" = 0 ] && {
+								cmd_dnsmasq_listen_show;
+							} ;;
 		esac
 		;;
 	ssr)
 		case "${2}" in
 			new)			cmd_shadowsocks_read_new_data ;;
 			port) 			cmd_shadowsocks_local_port_change "${3}" ;;
-			#flush) 			cmd_shadowsocks_iptable_flush ;;
-			reset) 			cmd_shadowsocks_iptable_reset ;;
+			reset) 			cmd_shadowsocks_iptable_reset && all_services_restart;;
 			status | *) 	cmd_vpn_status ;;
 		esac
 		;;
@@ -46,23 +91,45 @@ case "${1}" in
 			on) 			cmd_adguardhome_on ;;
 			off) 			cmd_adguardhome_off ;;
 			test)			cmd_adguard_check ;;
+			update)			cmd_adguard_update ;;
+			restart)		/opt/etc/init.d/S99adguardhome restart
+				exit 0
+				;;
 			*) 				cmd_adguardhome_status ;;
+		esac
+		;;
+
+	hosts)
+		case "${2}" in
+			add ) 			cmd_hosts_one_add "${3}" "${4}" ;;
+			del ) 			cmd_hosts_one_del "${3}";;
+			prune ) 		cmd_hosts_prune ;;
+			edit ) 			cmd_hosts_edit ;;
+			*) 				cmd_hosts_list ;;
 		esac
 		;;
 
 	dns)
 		case "${2}" in
-			#adguard) 		cmd_adguardhome_on ;;
-			test) 			cmd_dns_test ;;
+			test) 			cmd_dns_test "${3}";;
 			*) 				cmd_dnsmasq_dns_change "${2}" ;;
 		esac
 		;;
 
 	vpn)
 		case "${2}" in
-			set) 			cmd_interface_change aks ;;
-			#flush) 			cmd_vpn_iptable_flush ;;
-			reset) 			cmd_vpn_iptable_reset ;;
+			set) 			cmd_interface_change skip && cmd_vpn_iptable_reset &> /dev/null ;;
+			gateway) 		cmd_manual_gateway_set && cmd_vpn_iptable_reset &> /dev/null ;;
+			reset) 			cmd_vpn_iptable_reset && all_services_restart;;
+			net | guest)
+				case "${3}" in
+					add ) 			cmd_bridge_vpn_access_add && cmd_vpn_iptable_reset &> /dev/null;;
+					del ) 			cmd_bridge_vpn_access_del && cmd_vpn_iptable_reset &> /dev/null;;
+					*) 				cmd_bridge_vpn_access_list ;;
+				esac
+				;;
+
+			rescan | scan)	cmd_scan_interface_list ;;
 			status | *) 	cmd_vpn_status ;;
 		esac
 		;;
@@ -80,37 +147,58 @@ case "${1}" in
 			on) 			cmd_ads_protect_on ask;;
 			off) 			cmd_ads_protect_off ;;
 			edit) 			cmd_ads_edit ;;
+			add)			cmd_ads_add_host "${3}" ;;
+			del)			cmd_ads_del_from_skip_list "${3}" ;;
 			status | *) 	cmd_ads_status ;;
 		esac
 		;;
 
-	debug)
+	tags)
 		case "${2}" in
-			nofiles) 		cmd_print_debug "${2}" ;;
-			*) 				cmd_print_debug '' ;;
+			list) 			cmd_show_tags_domain_list "${3}" ;;
+			add)			cmd_add_domain_to_tag_list "${3}" "${4}" ;;
+			del)			cmd_del_domain_to_tag_list "${3}" "${4}" ;;
+			*) 				cmd_show_tags_domain_list "${2}" ;;
 		esac
 		;;
-	test | check)			cmd_state_checker
+	debug)
+		case "${2}" in
+			ipset) 			kvas_list_ipset_check ;;
+			*) 				cmd_print_debug "${2}"		;;
+		esac
 		;;
-	add | new)				cmd_add_one_host "${2}"
+	test | check)			cmd_state_checker "${2}"
+							[ -n "${2}" ] && exit 0
+		;;
+	add | new)				cmd_add_one_host "${2}" "yes" "${3}"
 		;;
 	import)					cmd_import_hosts "${2}"
 		;;
 	export)					cmd_export_hosts "${2}"
 		;;
-	del | rm)				cmd_del_one_host "${2}"
+	del | rm  )				cmd_del_one_host "${2}"
 		;;
 	purge | clear)			cmd_clear_list "${2}"
 		;;
-	show | list)			cmd_show_list
+	show | list | search | find)	
+							cmd_show_kvas_list "${2}"
 		;;
-	period)					cmd_set_period_update "${2}"
+	reset | init)	        cmd_kvas_init
 		;;
-	update)					cmd_update_list
+	upgrade | update)		sh /opt/apps/kvas/bin/main/upgrade "${2}" "${3}"; exit 0
 		;;
-	version | ver)			warning "Версия скрипта ${APP_VERSION}-${APP_RELEASE}"
+	rollback)				sh /opt/apps/kvas/bin/main/upgrade rollback "${2}"; exit 0
 		;;
-	help | *)				cmd_help
+	version | ver)			version
+		;;
+	help|-h|--h ) 			[ -n "${2}" ] && cmd_help | grep "${2}" || cmd_help
+		;;
+	uninstall ) 			cmd_uninstall  "${2}" "${3}"
+		;;
+
+	*)						error "Команда '${1}' не известна, список доступных команд:"
+							print_line
+							cmd_help
 		;;
 esac
 

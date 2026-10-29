@@ -1,11 +1,40 @@
 #!/bin/sh
-[ "${type}" = "iptables" ] || exit 0
-#[ "${table}" = "nat" ] || exit 0
+
+
+#------------------------------------------------------------------------------
+#
+#	ПАКЕТ КВАС
+#
+#------------------------------------------------------------------------------
+#
+#	Данный файл служит для создания правил для пропуска Shadowsocks трафика (tcp)
+#	при использовании любого shadowsocks подключения.
+#	Они срабатывают при перезаписи правил в таблице netfilter
+#	https://github.com/ndmsystems/packages/wiki/Opkg-Component
+#
+# ------------------------------------------------------------------------------
+#	Разработчик: mail@zeleza.ru
+#	Дата создания: 21/05/2022
+#	Лицензия: Apache License 2.0
+# ------------------------------------------------------------------------------
 
 # Shadowsocks+
-if ! /opt/sbin/iptables-save 2>/dev/null | grep unblock | grep -q @PROXY_PORT ; then
-	ipset create unblock hash:net family inet -exist
-	/opt/sbin/iptables -w -t nat -A PREROUTING -i @INFACE -p tcp -m set --match-set unblock dst -j REDIRECT --to-port @PROXY_PORT
+if [ "${type}" = "iptables" ] && echo "${table}" | grep -qE 'nat|mangle' ; then
+
+	. /opt/apps/kvas/bin/libs/ndm
+	proxy_port=$(get_config_value SSR_DNS_PORT)
+	interface=$(get_local_inface)
+	if ! ip4save | grep "${SSR_IPTABLES_CHAIN}" | grep -qv '\[0:0\]' && \
+   	   ! ip4save | grep PREROUTING | grep "${interface}" | grep "${IPSET_TABLE_NAME}" | grep REDIRECT | grep -q "${proxy_port}" ; then
+#   		logger -t "КВАС"  "Запущен файл ${0}"
+	#	 создаем правила для shadowsocks подключения
+		ip4_firewall_ssr_prune &> /dev/null
+		ip4_firewall_set_ssr_rules &> /dev/null
+		ip4_add_guest_to_ssr_network &> /dev/null
+	fi
+
 fi
 
-exit 0
+
+
+

@@ -1,34 +1,37 @@
 #!/bin/sh
 
-[ "$type" != "iptables" ] && exit 0
-[ "$table" != "mangle" ] && exit 0
+#------------------------------------------------------------------------------
+#
+#	ПАКЕТ КВАС
+#
+#------------------------------------------------------------------------------
+#
+#	Данный файл служит для создания новых правил маркировки трафика по протоколу IPv4
+#	при использовании VPN подключения отличного от shadowsocks.
+#	Они срабатывают при перезаписи правил в таблице netfilter
+#	https://github.com/ndmsystems/packages/wiki/Opkg-Component
+#	основными задачами являются:
+#
+#	1. Создание kvas таблицы для ipset ip4
+#	2. Проверка на наличие ускорения трафика (аппаратное и программное)
+#	3. В зависимости от наличия ускорения включаем те или иные правила маркировки трафика
+#
+# ------------------------------------------------------------------------------
+#	Разработчик: mail@zeleza.ru
+#	Дата создания: 21/05/2022
+#	Лицензия: Apache License 2.0
+# ------------------------------------------------------------------------------
 
-ip4tables() (if ! /opt/sbin/iptables -C "$@" &>/dev/null; then iptables -A "$@"; fi)
-ip4save() (/opt/sbin/iptables-save)
-# проверка на доступность программного и аппаратного ускорения
-fastnet_support()(curl -s localhost:79/rci/show/version | grep -q ppe)
-fast_hw_enabled()(! curl -s localhost:79/rci/show/rc/ppe | grep hardware -C1 | grep -q false)
-fast_sw_enabled()(! curl -s localhost:79/rci/show/rc/ppe | grep software -C1 | grep -q false)
-fastnet_enabled()(fast_hw_enabled || fast_sw_enabled)
 
-# VPN
-ipset create unblock hash:net family inet -exist
+# Пропускаем обработку, если тип подключения отличен от iptables
+# а сама талица отлична от mangle
+if [ "${type}" = "iptables" ] ; then
 
-if fastnet_enabled; then
-	ip4save | grep "\-j CONNMARK" | grep -qE 'mark|unblock' || {
-		# Без отключения ускорителей fastnat и hwnat
-		logger "Программное и аппаратное ускорение ПОДКЛЮЧЕНО."
-		ip4tables -A PREROUTING -t mangle -m conntrack --ctstate NEW -m set --match-set unblock dst -j CONNMARK --set-mark 0xd1000
-		ip4tables -A PREROUTING -t mangle -j CONNMARK --restore-mark
-		logger "Маркировка трафика для подключенного ускорения ВКЛЮЧЕНА."
-	}
-else
-	ip4save | grep "\j MARK" | grep -q 'unblock' || {
-		# С отключением fastnat и ускорителей hwnat
-		logger "Программное и аппаратное ускорение ОТКЛЮЧЕНО!"
-		ip4tables PREROUTING -t mangle -i br0 -p tcp -m set --match-set unblock dst -j MARK --set-mark 0xd1000
-		ip4tables PREROUTING -t mangle -i br0 -p udp -m set --match-set unblock dst -j MARK --set-mark 0xd1000
-		logger "Маркировка трафика для отключенного ускорения ВКЛЮЧЕНА."
-	}
+	. /opt/apps/kvas/bin/libs/ndm
+	# Создаем таблицу kvas для ipset ip4
+	ip4set_create_table &> /dev/null
+	#	маркируем правила
+	[ "${table}" = mangle ] && ip4_mark_vpn_network
 fi
-exit 0
+
+

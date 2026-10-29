@@ -1,0 +1,557 @@
+#!/bin/sh
+#------------------------------------------------------------------------------
+#	ПАКЕТ КВАС
+#------------------------------------------------------------------------------
+#
+#	Данный файл содержит функции для отладки и выявления проблем
+#	в работе пакета КВАС
+#
+# ------------------------------------------------------------------------------
+#	Разработчик: mail@zeleza.ru
+#	Дата создания: 22/05/2022
+#	Лицензия: Apache License 2.0
+# ------------------------------------------------------------------------------------------
+
+. /opt/apps/kvas/bin/libs/main
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+dnsmasq_debug() {
+
+	[ -f /opt/etc/init.d/S56dnsmasq ] && {
+
+		warning "Состояние службы dnsmasq по команде "
+		
+		ready "/opt/etc/init.d/S56dnsmasq status"
+		if /opt/etc/init.d/S56dnsmasq status &> /dev/null; then
+			when_ok "ЗАПУЩЕНА"
+		else
+			when_bad "ОСТАНОВЛЕНА"
+			print_line
+			result=$(/opt/sbin/dnsmasq)
+			case "${result}" in
+			0) warning "Dnsmasq успешно повторно запущен." ;;
+			1)
+				error "Обнаружена проблема с файлом конфигурации"
+				error "Запускаем проверку файла конфигурации dnsmasq"
+				print_line
+				/opt/sbin/dnsmasq --test
+				print_line
+				warning "Файл конфигурации dnsmasq"
+				print_line
+				cat < "/opt/etc/dnsmasq.conf" | sed 's/^\(.*\)\(#.*\)/\2/; /^#/d; /^$/d'
+				print_line
+				exit 1
+				;;
+			2)
+				error "Возникла проблема с доступом к сети"
+				error "используемый адрес, попытка использовать "
+				error "привилегированные порты без разрешения"
+				exit 1
+				;;
+			3)
+				error "Возникла проблема при обращении к файловой системе"
+				error "отсутствующий файл /каталог или разрешения на них."
+				exit 1
+				;;
+			4)
+				error "Сбой выделения памяти."
+				exit 1
+				;;
+			5)
+				error "Невыявленная проблема."
+				exit 1
+				;;
+			11 | *)
+				error "[${result}] Проблемы при выделении адресов для аренды DHCP "
+				exit 1
+				;;
+			esac
+		fi
+		result=$(cat < /opt/etc/dnsmasq.conf | sed 's/^\(.*\)\(#.*\)/\2/; /^#/d; /^$/d')
+		echo_debug "Выборка из файла конфигурации dnsmasq: /opt/etc/dnsmasq.conf" "${result}"
+
+	}
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+vpn_debug() {
+
+	vpn_cli_desc=$(get_current_vpn_interface "cli_desc")
+	vpn_cli=$(get_current_vpn_interface "cli")
+	connected=$(is_vpn_interface_connected "${vpn_cli}")
+	ready "Состояние vpn соединения ${vpn_cli_desc}"
+	if [ "${connected}" = 'on' ]; then
+		when_ok "ПОДКЛЮЧЕНО"
+		result="$(/opt/sbin/ip route show table 1001)"
+		echo_debug "Таблица заполнения маршрутов VPN списка id=1001\nкоманда: 'ip route show table 1001'" "${result}"
+		result="$(/opt/sbin/ip rule show)"
+		echo_debug "Таблица правил маршрутизации VPN списка id=1001\nкоманда: 'ip rule show'" "${result}"
+
+#		ip_vpn=$(ip a | grep "${vpn_entware}:" -A2 | grep inet | tr -s ' ' | cut -d" " -f3 | cut -d"/" -f1)
+#		result=$()
+	else
+		when_bad "ОСТАНОВЛЕНО"
+		print_line
+		warning "Проверьте конфигурацию ${vpn_cli_desc} соединения"
+		warning "на странице $(get_router_ip)/controlPanel/otherConnections"
+		print_line
+		exit 1
+	fi
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+shadowsocks_debug() {
+
+	ready "Состояние службы shadowsocks"
+	if /opt/etc/init.d/S22shadowsocks status &> /dev/null; then
+		when_ok "ЗАПУЩЕНА"
+		port=$(cat < '/opt/etc/shadowsocks.json' | grep local_port | cut -d':' -f2 | tr -d ' ,')
+		result=$(netstat -ltunp 2> /dev/null | grep "${SSR_NAME}" | tr -s " ")
+		echo_debug "Отчет по прослушиванию порта shadowsocks [${port}]\nкоманда: netstat -ltunp | grep \"ss-redir\"" "${result}"
+		result=$(cat < /opt/etc/shadowsocks.json | grep -vE "password|server")
+		echo_debug "Выборка из файла конфигурации shadowsocks /opt/etc/shadowsocks.json" "${result}"
+
+	else
+		when_bad "ОСТАНОВЛЕНА"
+		print_line
+		warning "Файл конфигурации shadowsocks"
+		print_line
+		cat < "/opt/etc/shadowsocks.json" | sed 's/^\(.*\)\(#.*\)/\2/; /^#/d; /^$/d'
+		print_line
+		warning "Запускаем shadowsocks в режиме отладки"
+		print_line
+		ssr_run -v
+		print_line
+		exit 1
+	fi
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+dnscrypt_proxy_debug() {
+
+	ready "Состояние службы dnscrypt-proxy2"
+
+	if /opt/etc/init.d/S09dnscrypt-proxy2 status &> /dev/null; then
+		when_ok "ЗАПУЩЕНА"
+		port=$(cat /opt/etc/dnscrypt-proxy.toml | sed 's/^\(.*\)\(#.*\)/\2/; /^#/d; /^$/d' | grep listen_addresses | cut -d ":" -f4)
+		port="${port::-2}"
+		result=$(netstat -ltunp 2> /dev/null | grep "dnscrypt" | tr -s " ")
+		echo_debug "Отчет по прослушиванию порта dnscrypt-proxy [${port}]\nкоманда: netstat -ltunp | grep \"dnscrypt\"" "${result}"
+
+	else
+		when_bad "ОСТАНОВЛЕНА"
+		print_line
+		warning "Файл конфигурации dnscrypt-proxy"
+		print_line
+		config=$(cat < "/opt/etc/dnscrypt-proxy.toml" | tr -d '^ '| grep -vE "^#" | grep -vE '^$')
+		echo_debug "Содержание файла конфигурации /opt/etc/dnscrypt-proxy.toml" "${config}"
+
+		log=$(netstat -ltunp 2> /dev/null | grep 'dnscrypt')
+		echo_debug "Журнал с фильтрацией по порту ${port::-2} dnscrypt-proxy2\nКоманда: netstat -ltunp" "${log}"
+	fi
+
+	result=$(cat < "/opt/etc/dnscrypt-proxy.toml" | grep -vE "^#" | grep -E 'listen_addresses.=|cache.=')
+	echo_debug "Выборка из файла конфигурации dnscrypt-proxy2 /opt/etc/dnscrypt-proxy.toml" "${result}"
+
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+kvas_list_debug() {
+
+	result=$(cat < "${KVAS_LIST_FILE}" | sed 's/^\(.*\)\(#.*\)/\2/; s/^...../*****/; /^#/d; /^$/d')
+	echo_debug "Защищенный список /opt/etc/kvas.list (все записи)" "${result}"
+}
+
+hide_num_letters(){
+	line=${1};  nums=5; replacement="*****"
+	if [ "${#line}" -le ${nums} ] ; then hided_line=${replacement}; 
+	else hided_line="${replacement}${line:${nums}}"; 
+	fi
+	echo ${hided_line}
+}
+
+
+check_words_in_multiline_var() {
+    local multiline_var="$1"
+    local words="$2"
+
+    echo "${multiline_var}" | while IFS= read -r line; do
+        for word in $words; do
+            if [[ ! "$line" == *"$word"* ]]; then
+                # echo "Слово '$word' не найдено в переменной."
+                return 1
+            fi
+        done
+    done
+	# echo "Слово '$word' найдено в переменной."
+    return 0
+}
+
+
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Проверка наличия ip адресов хостов в таблице ipset
+#
+# ------------------------------------------------------------------------------------------
+kvas_list_ipset_check(){
+
+	echo "Проверка наличия ip адресов хостов в таблице ipset"
+
+	HAS_NO_ADDRESS=;NOT_IN_TABLE=;
+	sleep 2
+	local bad_ipset_list=""
+	if [ -f "${KVAS_LIST_FILE}" ]; then
+		result_ipset=$(ipset list ${IPSET_TABLE_NAME} | grep -vEi '^[a-z]' | sort )
+		if [ -n "${result_ipset}" ]; then
+			while read -r line || [ -n "${line}" ]; do
+				[  -z "${line}" ] && continue
+				[ "${line::1}" = "#" ] && continue
+				#  Удаляем из слова первую * и затем меняем все 
+				line="${line/\*/}"
+				hided_line="$(hide_num_letters "${line}")"
+
+				dns_ip=$(get_config_value DNS_DEFAULT)
+
+				if echo "${line}" | grep -qE "${IP_FILTER}|${NET_FILTER}" ; then
+					ips=${line}; ips=${ips//,/ }
+				else
+					ips=$(get_iplist_from_domain "${line}" "${dns_ip}" | tr '\n' ',')
+					ips="${ips::-1}"
+				fi
+				if [ -z "$ips" ] || [ "${ips}" = 0.0.0.0 ]; then
+                	bad_ipset_list="$(printf "%s" "${bad_ipset_list}\n$(ready "${BLUE}${line}${NOCL}" && when_alert "АДРЕСА НЕТ")")"
+					HAS_NO_ADDRESS=true
+	            else
+					line_ips="${hided_line} ${ips}"
+					len_str=${#line_ips}
+					difflen=$((LENGTH - len_str))
+					_len=$((LENGTH - ${#line} - 18))
+					if [ "${difflen}" -lt 0 ]; then 
+						cutted="${ips:0:${_len}}...";
+	 				else 
+						cutted="${ips} "; 
+					fi
+                   
+					if ! check_words_in_multiline_var "${result_ipset}" "${ips}" ; then
+						bad_ipset_list="$(printf "%s" "${bad_ipset_list}\n$(ready "${RED}${line}${NOCL} ${cutted}"; when_bad "ОТСУТСТВУЕТ")")"
+						NOT_IN_TABLE=true
+					fi
+
+				fi
+				
+			done < "${KVAS_LIST_FILE}"
+
+			# Удаляем пустые строки
+			bad_ipset_list=$(printf "%s" "${bad_ipset_list}" | sed '/^$/d')
+			if [ -n "${bad_ipset_list}" ] ; then 
+				print_line
+				echo -e "${RED}ВНИМАНИЕ!${NOCL} Выводятся только записи с ошибками: ОТСУТСТВУЕТ и АДРЕСА НЕТ"
+				print_line
+				printf '%s' "$bad_ipset_list"
+			else 
+				print_line
+				echo -e "${GREEN}Все записи в таблице ${BLUE}${IPSET_TABLE_NAME}${NOCL} ${GREEN}прошли проверку.${NOCL}"
+			fi 
+
+		else
+			error "Таблица защиты ${IPSET_TABLE_NAME} отсутствует в списке ipset"
+			echo -e "Проверьте работу скрипта ${GREN}/opt/apps/kvas/bin/main/ipset${NOCL}, запустив его."
+		fi
+	else
+		error "Отсутствует защищенный список /opt/etc/kvas.list"
+		echo -e "Добавьте домены в этот список командой ${GREN}kvas add <domain.ru>${NOCL}"
+	fi
+
+	
+	
+	echo 
+	[ "${HAS_NO_ADDRESS}" = true ] && {
+		print_line
+		echo -e "Значение ${BLUE}АДРЕСА НЕТ${NOCL} - это может говорить о том, что адрес этого"
+		echo -e "домена не определяется утилитами ${BLUE}kdig${NOCL} или ${BLUE}dig${NOCL}."
+		echo ''
+		echo -e "    | Как правило, все крупные домены, которые вмещают в себя"
+		echo -e "    | множество поддоменнов и которые часто динамически обновляют"
+		echo -e "    | свои ${BLUE}диапазоны IP${NOCL} - не дают определять свой корневой ${BLUE}IP${NOCL} и "
+		echo -e "    | пишут обратный (реверсивный) адрес в виде строки."
+		echo -e "    |"
+		echo -e "    | В этом случае, необходимо подходить творчески и добавлять в"
+		echo -e "    | список не корневое доменное имя, как например с ${BLUE}google.com${NOCL},"
+		echo -e "    | а конкретный интересующий Вас субдомен, вроде ${BLUE}bard.google.com.${NOCL}"
+		echo -e ""
+		echo -e "${GREEN}Потому, в данном случае, рекомендуется удалить текущий домен с ошибкой${NOCL}"
+		echo -e "${GREEN}и добавить конкретный субдомен.${NOCL}"
+		echo -e ""
+	}
+
+	[ "${NOT_IN_TABLE}" = true ] && {
+		print_line
+		echo -e "Значение ${RED}ОТСУТСТВУЕТ${NOCL} - это может говорить о том, что адрес доменного имени "
+		echo -e "был корректно определен при помощи утилит ${BLUE}kdig${NOCL} или ${BLUE}dig${NOCL}, но по какой-то "
+		echo -e "причине, пока не был добавлен в текущую {BLUE}ipset{NOCL} таблицу."
+		echo ''
+	}
+
+}
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+kvas_ipset_debug() {
+
+	result=$(cat < "/opt/apps/kvas/bin/main/ipset" | sed -n 's/.*\(@[0-9\.:]\{1,20\}\).*/\1/p' | sort -u)
+	echo_debug "DNS сервер, используемый в /opt/apps/kvas/bin/main/ipset" "${result}"
+#	/opt/apps/kvas/bin/main/ipset &>/dev/null
+	result_ipset=$(ipset list ${IPSET_TABLE_NAME} | grep -vEi '^[a-z]' | sort | head -10 | sed 's/^...../*****/')
+	result=$(echo "${result_ipset}" )
+	echo_debug "Таблица ipset (10 крайних записей)\nкоманда: 'ipset list ${IPSET_TABLE_NAME}'" "${result}\n...\n...\n..."
+	print_line
+	kvas_list_ipset_check
+
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+kvas_dnsmasq_debug() {
+
+	result=$(cat < "${DNSMASQ_IPSET_HOSTS}" | sed 's/^\(.*\)\(#.*\)/\2/; /^#/d; /^$/d' | sed 's/^...../*****/'  )
+	echo_debug "Защищенный список в ${DNSMASQ_IPSET_HOSTS} (все записи)" "${result}"
+}
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+kvas_adguard_debug() {
+
+#	result=$(cat < "/opt/apps/kvas/bin/main/adguard" | sed 's/^\(.*\)\(#.*\)/\2/; /^#/d; /^$/d')
+#	echo_debug "Скрипт заполнения защищенный список /opt/apps/kvas/bin/main/dnsmasq" "${result}"
+	result=$(cat < "${ADGUARD_IPSET_FILE}" | sed 's/^\(.*\)\(#.*\)/\2/; /^#/d; /^$/d' | sed -e '$d' | sed 's/^...../*****/' )
+	echo_debug "Блок записей по ipset в ${ADGUARD_IPSET_FILE}" "${result}"
+	
+	result=$(cat < "${ADGUARDHOME_LOG}" | sed 's/^\(.*\)\(#.*\)/\2/; /^#/d; /^$/d' | tail -20)
+	echo_debug "Журнал загрузки AdGuard Home в ${ADGUARDHOME_LOG}" "${result}"
+
+
+}
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+adblock_dnsmasq_debug() {
+
+	if [ -n "$(cat < '/opt/etc/dnsmasq.conf' | sed '/^$/d' | sed 's/^\(.*\)\(#.*\)/\2/; /^#/d; /^$/d' | grep "adblock.dnsmasq")" ]; then
+#		result=$(cat < "/opt/apps/kvas/bin/main/adblock")
+#		echo_debug "Скрипт заполнения списка блокировки рекламы/opt/apps/kvas/bin/main/adblock" "${result}"
+		result=$(cat < '/opt/etc/adblock.dnsmasq' | sed -e '/^#/d; /^$/d' )
+		echo_debug "Список блокировки рекламы /opt/etc/adblock.dnsmasq (все записи)" "${result}"
+	fi
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+iptables_debug() {
+	if has_ssr_enable; then
+		print_line
+		cmd_shadowsocks_iptable_reset
+		result=$(/opt/sbin/iptables-save 2>/dev/null | grep -E ${IPSET_TABLE_NAME}'|SHADOWSOCKS')
+	else
+		print_line
+		. /opt/apps/kvas/bin/libs/ndm
+		cmd_vpn_iptable_reset
+		result=$(/opt/sbin/iptables-save | grep -E 'VPNREDIR|'${IPSET_TABLE_NAME} )
+	fi
+	echo_debug "Правила перенаправления трафика ${IPSET_TABLE_NAME} в iptables\nкоманда: iptables-save | grep -E 'SHADOWSOCKS|VPNREDIR|'${IPSET_TABLE_NAME}" "${result}"
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+syslog_debug() {
+
+	result=$(curl -s -d '{"once": false, "max-lines": 66}' "${LOCALHOST_IP}"':79/rci/show/log' \
+			| grep -A3 -B1 \"E\" | grep -E "message|timestamp" \
+			| cut -d":" -f2- | tr -d '"' | sed 's/\,$/\n/g' | sed 's/^\(.*\)\(#.*\)/\2/; /^#/d; /^$/d' \
+			)
+	[ -n "${result}" ] && {
+		echo "Список ошибок из системного журнала"
+		print_line
+		echo "${result}"
+		echo ''
+	}
+	
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+ping_debug() {
+	#  host=$(cat < '"${KVAS_LIST_FILE}"' | sed 's/^\(.*\)\(#.*\)/\2/; /^#/d; /^$/d' | tr -s '\n' | head -1)
+	host='myip2.ru'
+	result=$(ping -c3 "${host}")
+	echo_debug "Прозвон ${host}" "${result}"
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+router_info() {
+
+	result=$(curl -s "${LOCALHOST_IP}:79/rci/show/defaults" \
+			| grep -Ei "country|ndmhwid|product" \
+			| tr -d ' ",' \
+			| sed 's/:/: /; s/country/Страна/; s/ndmhwid/Модель/; s/product/Продукт/' \
+			)
+	arch=$(grep "arch" /opt/etc/entware_release | sed 's/arch=/Тип архитектуры: /')
+	keenos=$(curl -s localhost:79/rci/show/version | jq -s '.[] | .title'| tr -d '"')
+	result="${result}\n${arch}\nВерсия KeenOS: ${keenos}"
+	echo_debug "Информация о роутере" "${result}"
+
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+date_info() {
+#	[ -n "${APP_RELEASE}" ] && rel="-${APP_RELEASE}" || rel=''
+#	echo "КВАС версии ${APP_VERSION}${rel}"
+	version
+	print_line
+	echo "Текущая дата и время $(date)"
+	echo ''
+}
+
+show_install_log(){
+	if [ -f "${INSTALL_LOG}" ] ; then
+		print_line
+		echo "Журнал установки пакета:"
+		print_line
+		cat < "${INSTALL_LOG}" | sed 's/\(^Текущее.*\) .*$/\1/'
+		echo ''
+	fi
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог доступных подключений и их названия в entware и CLI
+#
+# ------------------------------------------------------------------------------------------
+show_interfaces_debug() {
+	if [ -f "${INFACE_NAMES_FILE}" ] ; then
+		echo "Доступные VPN интерфейсы в системе "
+		print_line
+		cat < "${INFACE_NAMES_FILE}" | sed 's/^\(.*\)|\(.*\)|\(.*\)$/\3 = [\1 | \3]/' | grep -v '^ '
+		echo ''
+	fi
+}
+
+show_guest_nets(){
+	list=$(cat <  "${KVAS_CONF_FILE}" | sed -n 's/INFACE_GUEST_ENT=\(.*\)/\1/p;'| sed 's/[ ]//g; s/^\,//')
+	[ -n "${list}" ] && {
+		ready "Список гостевых сетей"
+		when_ok "${list}"
+	}
+}
+
+show_services_status(){
+	. /opt/apps/kvas/bin/libs/vpn
+	cmd_vpn_status
+	cmd_ads_status
+	if [ -f "${ADGUARDHOME_DEMON}" ] && cmd_adguardhome_status | grep -q ВКЛЮЧЕН ; then
+		cmd_adguardhome_status
+	else
+		cmd_dns_crypt_status_show
+		cmd_dnsmasq_dns_change
+	fi
+	show_guest_nets
+
+}
+# ------------------------------------------------------------------------------------------
+#
+#	 Формируем лог отладочной информации
+#
+# ------------------------------------------------------------------------------------------
+cmd_print_debug() {
+
+	if [ -z "${1}" ] ; then
+		print_debug
+	else
+		# ready "Записываем данные отладки в файл ${1}..."
+		REP='_'
+		print_debug | sed -E "s/\\\033\[[0-9;]*[a-zA-Z]//g" | tee "${1}" 
+		#&& when_ok "УСПЕШНО" || when_bad "ОШИБКА"
+	fi
+}
+
+print_debug() {
+	internet_check
+	dns_override_check
+	date_info
+	router_info
+#	ping_debug
+	show_install_log
+#	 show_services_status
+	print_line
+	syslog_debug
+	show_interfaces_debug
+
+	if cmd_adguardhome_status | grep -q ВКЛЮЧЕН ; then
+		kvas_adguard_debug
+	else
+		print_line
+		dnsmasq_debug
+		dnscrypt_proxy_debug
+		adblock_dnsmasq_debug
+		kvas_dnsmasq_debug
+	fi
+
+	print_line
+	if has_ssr_enable; then
+		shadowsocks_debug
+	else
+		vpn_debug
+	fi
+#	print_line
+	iptables_debug
+	kvas_list_debug
+	kvas_ipset_debug
+
+
+}
